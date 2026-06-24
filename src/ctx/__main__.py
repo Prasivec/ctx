@@ -1,0 +1,6 @@
+"""Allow running ctx as python -m ctx."""
+
+from ctx.cli import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())

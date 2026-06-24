@@ -1,0 +1,170 @@
+.TH CTX 1 "June 2026" "ctx 1.0.0" "User Commands"
+.SH NAME
+ctx \- terminal context and vault variable manager
+.SH SYNOPSIS
+.B ctx
+.I command
+[\fIargs\fR...]
+.PP
+.B ctxctl
+.I command
+[\fIargs\fR...]
+.SH DESCRIPTION
+\fBctx\fR is a lightweight CLI for managing named context vaults of shell
+variables. It is designed for pentesting labs, HTB/PG machines, client
+engagements, homelabs, cloud projects, and any workflow where you need quick
+access to context-specific values such as IP addresses, domains, credentials,
+tokens, hosts, and ports.
+.PP
+Vaults are stored as env-compatible files under
+\fI\(ti/.config/ctx/vaults/\fR. The active vault is terminal-local via the
+\fBCTX_ACTIVE_VAULT\fR environment variable, set by shell integration when
+you run \fBctx load\fR.
+.PP
+Python cannot export variables into a parent shell. Therefore \fBctx\fR is a
+shell function (installed from \fI\(ti/.local/share/ctx/shell/\fR) that wraps
+the \fBctxctl\fR Python backend. Commands like \fBctx load\fR, \fBctx unload\fR,
+and \fBctx set\fR require this shell integration. \fBctx set\fR automatically
+reloads the active vault into the shell after each successful write.
+.SH COMMANDS
+.TP
+.B ctx create \fIvault\fR
+Create a new empty vault file. Does not load the vault.
+.TP
+.B ctx load [\fIvault\fR]
+Load a vault into the current shell. With a vault name, selects that vault,
+unloads variables from any previously loaded vault, then sources variables.
+Fails if the named vault does not exist; use \fBctx create\fR first.
+Without a vault name, re-sources the active vault from disk. Handled by shell
+integration.
+.TP
+.B ctx unload
+Unload the currently loaded vault from this shell session. Removes all
+variables that were sourced from the vault. Does not delete the vault file.
+Handled by shell integration.
+.TP
+.B ctx current
+Show the active vault for this terminal. Returns non-zero if none is set.
+.TP
+.B ctx list
+List all vault names.
+.TP
+.B ctx set \fIkey\fR \fIvalue\fR
+Set a variable in the active vault. Values with spaces should be quoted.
+Validation warnings may be printed to stderr but do not block the operation.
+The shell function automatically reloads the vault after each successful
+\fBctx set\fR so shell variables (e.g. \fB$ip\fR) are updated immediately.
+Handled by shell integration.
+.TP
+.B ctx get \fIkey\fR
+Print a variable value from the active vault.
+.TP
+.B ctx unset \fIkey\fR
+Remove a variable from the active vault.
+.TP
+.B ctx show
+Display the active vault name and all stored variables.
+.TP
+.B ctx clear [\fB--force\fR]
+Remove all variables from the active vault. Prompts for confirmation unless
+\fB--force\fR is given.
+.TP
+.B ctx edit
+Open the active vault file in \fB$EDITOR\fR (fallback: nano, then vi).
+File permissions are restored to 600 after editing.
+.TP
+.B ctx path
+Print the filesystem path of the active vault file.
+.TP
+.B ctx delete \fIvault\fR [\fB--force\fR]
+Delete a named vault. Prompts for confirmation unless \fB--force\fR is given.
+If deleting the active vault, shell integration unloads its variables and
+clears \fBCTX_ACTIVE_VAULT\fR and \fBCTX_LOADED_VAULT\fR.
+.TP
+.B ctx rename \fIold\fR \fInew\fR
+Rename a vault. If the current terminal uses the old name, updates
+\fBCTX_ACTIVE_VAULT\fR.
+.TP
+.B ctx duplicate \fIold\fR \fInew\fR
+Copy one vault to a new name.
+.TP
+.B ctx help
+Show usage help (same as \fBctx --help\fR).
+.SH FILES
+.TP
+.I \(ti/.config/ctx/
+Configuration directory (mode 700).
+.TP
+.I \(ti/.config/ctx/vaults/
+Vault storage directory (mode 700).
+.TP
+.I \(ti/.config/ctx/vaults/\fIname\fR.env
+Vault file containing export lines (mode 600).
+.TP
+.I \(ti/.local/share/ctx/shell/ctx.sh
+Bash shell integration.
+.TP
+.I \(ti/.local/share/ctx/shell/ctx.zsh
+Zsh shell integration.
+.SH ENVIRONMENT
+.TP
+.B CTX_ACTIVE_VAULT
+Terminal-local active vault name, set by \fBctx load\fR.
+.TP
+.B CTX_LOADED_VAULT
+Name of the vault currently loaded in this shell session.
+.TP
+.B EDITOR
+Editor used by \fBctx edit\fR.
+.SH EXAMPLES
+HTB machine context:
+.PP
+.EX
+ctx create forest
+ctx load forest
+ctx set ip 10.10.10.161
+ctx set domain forest.htb
+ctx set user svc-alfresco
+ctx set pass "Password123!"
+nmap -sC -sV $ip
+evil-winrm -i $ip -u $user -p $pass
+ctx unload
+.EE
+.PP
+Switching vaults (previous variables are cleared):
+.PP
+.EX
+ctx load sauna
+echo $ip
+.EE
+.PP
+Homelab context:
+.PP
+.EX
+ctx create proxmox
+ctx load proxmox
+ctx set host pve.local
+ctx set user root
+ctx set pass "secret"
+ssh $user@$host
+.EE
+.PP
+Cloud/dev context:
+.PP
+.EX
+ctx create aws-staging
+ctx load aws-staging
+ctx set url https://api.staging.example.com
+ctx set token "eyJhbGciOi..."
+curl -H "Authorization: Bearer $token" $url/health
+.EE
+.SH SECURITY
+Vault files are stored in plaintext on disk with mode 600. Directories use
+mode 700. There is no encryption in v1. Secrets are not masked in output.
+Users are expected to protect their home directory and vault files accordingly.
+Do not commit vault files to version control.
+.SH SEE ALSO
+.BR ctxctl (1)
+
+\fBctx\fR is installed via \fBinstall.sh\fR. See the project README for
+full installation and troubleshooting instructions.

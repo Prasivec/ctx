@@ -1,0 +1,6 @@
+# Shell scripts and completions must use LF for Linux shebang execution
+*.sh text eol=lf
+*.zsh text eol=lf
+bin/ctx text eol=lf
+completions/*.bash text eol=lf
+man/* text eol=lf

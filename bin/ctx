@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# ctx launcher - installed to ~/.local/bin/ctx
+# Full use/load/set support requires the ctx shell function (configured by install.sh).
+
+set -euo pipefail
+
+PREFIX="${CTX_PREFIX:-${HOME}/.local}"
+BIN_DIR="${PREFIX}/bin"
+SHARE_DIR="${PREFIX}/share/ctx"
+
+_ctxctl_bin() {
+    if [[ -n "${CTXCTL_BIN:-}" && -x "${CTXCTL_BIN}" ]]; then
+        printf '%s\n' "${CTXCTL_BIN}"
+        return 0
+    fi
+    if [[ -x "${BIN_DIR}/ctxctl" ]]; then
+        printf '%s\n' "${BIN_DIR}/ctxctl"
+        return 0
+    fi
+    command -v ctxctl 2>/dev/null || true
+}
+
+_shell_required() {
+    local cmd="$1"
+    case "$cmd" in
+        load|unload|set) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+_main() {
+    local ctl
+    ctl="$(_ctxctl_bin)" || true
+    if [[ -z "${ctl}" ]]; then
+        echo "error: ctxctl not found. Ensure ${BIN_DIR} is in PATH and run install.sh." >&2
+        return 127
+    fi
+
+    if _shell_required "${1:-}"; then
+        echo "error: ctx ${1} requires shell integration (cannot export variables from a subprocess)." >&2
+        echo "Restart your shell or run:" >&2
+        if [[ -f "${SHARE_DIR}/shell/ctx.zsh" ]]; then
+            echo "  source ${SHARE_DIR}/shell/ctx.zsh" >&2
+        fi
+        if [[ -f "${SHARE_DIR}/shell/ctx.sh" ]]; then
+            echo "  source ${SHARE_DIR}/shell/ctx.sh" >&2
+        fi
+        return 1
+    fi
+
+    exec "${ctl}" "$@"
+}
+
+_main "$@"
