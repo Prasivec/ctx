@@ -5,8 +5,19 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import tempfile
+import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
+
+_fcntl_mod: Any
+try:  # Linux/Unix only
+    import fcntl as _fcntl_mod
+except Exception:  # pragma: no cover
+    _fcntl_mod = None
+
+fcntl: Any = _fcntl_mod
 
 from ctx.errors import (
     KeyNotFoundError,
@@ -15,12 +26,19 @@ from ctx.errors import (
 )
 from ctx.validation import validate_key_name, validate_vault_name
 
-DEFAULT_CONFIG_DIR = Path.home() / ".config" / "ctx"
+
+def default_config_dir() -> Path:
+    """Resolve config directory respecting XDG_CONFIG_HOME."""
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    if xdg:
+        return Path(xdg).expanduser() / "ctx"
+    return Path.home() / ".config" / "ctx"
+
+
+DEFAULT_CONFIG_DIR = default_config_dir()
 DEFAULT_VAULTS_DIR = DEFAULT_CONFIG_DIR / "vaults"
 
-EXPORT_LINE_PATTERN = re.compile(
-    r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$"
-)
+EXPORT_LINE_PATTERN = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 
 _config_dir: Path = DEFAULT_CONFIG_DIR
 _vaults_dir: Path = DEFAULT_VAULTS_DIR
@@ -68,6 +86,58 @@ def ensure_directories() -> None:
     os.chmod(_vaults_dir, 0o700)
 
 
+def _lock_file_path() -> Path:
+    """Path to the advisory lock file (inside the vault directory)."""
+    return _vaults_dir / ".ctx.lock"
+
+
+@contextmanager
+def _acquire_write_lock(timeout_s: float = 2.0) -> Iterator[int]:
+    """Acquire an exclusive advisory lock for vault mutations.
+
+    Uses a single lock file for all vault write operations.
+
+    Args:
+        timeout_s: Maximum time to wait for the lock.
+
+    Yields:
+        OS-level file descriptor holding the lock.
+
+    Raises:
+        RuntimeError: If locking is unsupported or lock cannot be acquired.
+    """
+    # On non-Unix platforms (notably Windows), keep ctx functional by treating
+    # locking as a no-op. Linux CI enforces real locking behavior.
+    if fcntl is None:
+        yield -1
+        return
+
+    ensure_directories()
+    lock_path = _lock_file_path()
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    os.chmod(lock_path, 0o600)
+    start = time.monotonic()
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if (time.monotonic() - start) >= timeout_s:
+                os.close(fd)
+                raise RuntimeError(
+                    "Vault directory is locked by another ctx process. Try again."
+                )
+            time.sleep(0.05)
+
+    try:
+        yield fd
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 def parse_shell_value(raw: str) -> str:
     """Parse a shell assignment value without executing it.
 
@@ -83,7 +153,9 @@ def parse_shell_value(raw: str) -> str:
     try:
         parts = shlex.split(stripped, posix=True)
         if parts:
-            return parts[0]
+            # If a user manually edited the vault and omitted quotes around a
+            # value with spaces, preserve the full value as data.
+            return " ".join(parts)
     except ValueError:
         pass
     if (
@@ -92,6 +164,51 @@ def parse_shell_value(raw: str) -> str:
     ) and len(stripped) >= 2:
         return stripped[1:-1]
     return stripped
+
+
+def read_vault_strict(path: Path) -> Dict[str, str]:
+    """Read variables from a vault, rejecting unsafe or malformed lines.
+
+    This is intended for shell-loading, where sourcing arbitrary lines would be
+    dangerous. Every non-empty, non-comment line must match KEY=VALUE or
+    export KEY=VALUE and the key must be a safe shell identifier.
+
+    Args:
+        path: Path to the vault file.
+
+    Returns:
+        Dictionary of variable keys to values.
+
+    Raises:
+        ValidationError: On any malformed line or unsafe key.
+    """
+    from ctx.errors import ValidationError
+
+    if not path.exists():
+        return {}
+
+    variables: Dict[str, str] = {}
+    content = path.read_text(encoding="utf-8")
+    for line_no, line in enumerate(content.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        match = EXPORT_LINE_PATTERN.match(stripped)
+        if not match:
+            raise ValidationError(
+                f"Invalid vault line {line_no}: only KEY=VALUE lines are supported."
+            )
+        key, raw_value = match.groups()
+        try:
+            validate_key_name(key)
+        except Exception as exc:  # pragma: no cover (covered via cli tests)
+            raise ValidationError(
+                f"Unsafe variable name on line {line_no}: {key}"
+            ) from exc
+        variables[key] = parse_shell_value(raw_value)
+
+    return variables
 
 
 def read_vault(path: Path) -> Dict[str, str]:
@@ -144,8 +261,32 @@ def write_vault(path: Path, variables: Dict[str, str]) -> None:
     text = "\n".join(lines)
     if text:
         text += "\n"
-    path.write_text(text, encoding="utf-8")
-    os.chmod(path, 0o600)
+
+    # Atomic replacement: write to a temp file in the same directory, fsync,
+    # then replace the target in one step.
+    ensure_directories()
+    tmp_path: Optional[Path] = None
+    with _acquire_write_lock():
+        try:
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                dir=str(path.parent),
+            )
+            tmp_path = Path(tmp_name)
+            os.chmod(tmp_path, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, path)
+            os.chmod(path, 0o600)
+        finally:
+            if tmp_path is not None and tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
 
 def list_vaults() -> List[str]:
@@ -305,7 +446,8 @@ def delete_vault(vault_name: str) -> None:
     path = vault_file_path(vault_name)
     if not path.exists():
         raise VaultNotFoundError(f"Vault '{vault_name}' does not exist.")
-    path.unlink()
+    with _acquire_write_lock():
+        path.unlink()
 
 
 def rename_vault(old_name: str, new_name: str) -> None:
@@ -327,8 +469,9 @@ def rename_vault(old_name: str, new_name: str) -> None:
         raise VaultNotFoundError(f"Vault '{old_name}' does not exist.")
     if new_path.exists():
         raise VaultExistsError(f"Vault '{new_name}' already exists.")
-    old_path.rename(new_path)
-    os.chmod(new_path, 0o600)
+    with _acquire_write_lock():
+        old_path.rename(new_path)
+        os.chmod(new_path, 0o600)
 
 
 def duplicate_vault(source_name: str, dest_name: str) -> None:
@@ -351,6 +494,7 @@ def duplicate_vault(source_name: str, dest_name: str) -> None:
     if dest_path.exists():
         raise VaultExistsError(f"Vault '{dest_name}' already exists.")
     variables = read_vault(source_path)
+    # write_vault takes the write lock.
     write_vault(dest_path, variables)
 
 

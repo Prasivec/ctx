@@ -137,12 +137,23 @@ Backend help: `ctxctl --help` and `ctxctl <command> --help`.
 
 ## Security model
 
-- Vaults are **plaintext** env files at `~/.config/ctx/vaults/<name>.env`.
+- Vaults are **plaintext** env files at:
+  - `$XDG_CONFIG_HOME/ctx/vaults/<name>.env` (when `XDG_CONFIG_HOME` is set)
+  - otherwise `~/.config/ctx/vaults/<name>.env`
 - Permissions: `~/.config/ctx` and `vaults/` are `700`; vault files are `600`.
 - **No encryption** in v1.
 - Secrets are **not masked** in `ctx show` or `ctx get`.
 - Validation **warns** on common keys (IP, port, URL, domain) but never blocks.
 - Do not commit vault files to git.
+
+### Hardened loading
+
+Vault files are user-editable, plaintext env-style files. **They are not sourced by your shell.**
+When you run `ctx load` or `ctx set`, the Python backend parses the vault as data and the shell
+integration evaluates only backend-generated `export` / `unset` statements with robust quoting.
+This prevents arbitrary shell code in vault files from executing on load.
+
+Remember: exported variables are visible to child processes. Treat secrets accordingly.
 
 ## Examples
 
@@ -233,7 +244,11 @@ Ensure `~/.local/share/man` is in `MANPATH`, or run `man -l ~/.local/share/man/m
 
 ```bash
 python3 -m pip install -e ".[dev]"
-pytest
+python -m pytest
+ruff check .
+ruff format --check .
+mypy
+bash -n install.sh uninstall.sh shell/ctx.sh
 ```
 
 ## Uninstall

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import sys
-from typing import Optional
+from typing import Optional, TextIO
 
 from ctx.errors import ValidationError
 
@@ -64,7 +64,7 @@ def validate_key_name(key: str) -> None:
         )
 
 
-def warn_value(key: str, value: str, stream: Optional[object] = None) -> None:
+def warn_value(key: str, value: str, stream: Optional[TextIO] = None) -> None:
     """Emit a validation warning for a key/value pair without blocking.
 
     Warnings are written to stderr. The command should still succeed.

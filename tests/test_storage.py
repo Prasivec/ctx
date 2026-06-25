@@ -39,6 +39,17 @@ def config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return cfg
 
 
+def test_default_config_dir_uses_xdg_config_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """XDG_CONFIG_HOME should override ~/.config for default config dir."""
+    from ctx import storage as storage_mod
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    resolved = storage_mod.default_config_dir()
+    assert resolved == (tmp_path / "xdg" / "ctx")
+
+
 def test_ensure_vault_creates_file(config_dir: Path) -> None:
     """ensure_vault creates an empty vault file."""
     path = ensure_vault("forest")
@@ -59,6 +70,8 @@ def test_set_requires_existing_vault(config_dir: Path) -> None:
     """set_variable does not create vaults implicitly."""
     with pytest.raises(VaultNotFoundError):
         set_variable("missing", "ip", "1.2.3.4")
+
+
 def test_set_get_unset(config_dir: Path) -> None:
     """Variables can be set, retrieved, and removed."""
     ensure_vault("lab")
@@ -72,7 +85,7 @@ def test_set_get_unset(config_dir: Path) -> None:
 def test_safe_quoting_special_characters(config_dir: Path) -> None:
     """Special characters and spaces are preserved via shell quoting."""
     ensure_vault("secrets")
-    value = "Password123! $pecial \"chars\""
+    value = 'Password123! $pecial "chars"'
     set_variable("secrets", "pass", value)
     path = vault_file_path("secrets")
     content = path.read_text(encoding="utf-8")
@@ -159,7 +172,9 @@ def test_clear_vault(config_dir: Path) -> None:
     assert read_vault(vault_file_path("clearme")) == {}
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Unix file permissions not enforced on Windows")
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Unix file permissions not enforced on Windows"
+)
 def test_directory_permissions(config_dir: Path) -> None:
     """Config and vault directories are created with mode 700."""
     ensure_directories()
@@ -167,7 +182,9 @@ def test_directory_permissions(config_dir: Path) -> None:
     assert stat.S_IMODE(os.stat(config_dir / "vaults").st_mode) == 0o700
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Unix file permissions not enforced on Windows")
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Unix file permissions not enforced on Windows"
+)
 def test_vault_file_permissions(config_dir: Path) -> None:
     """Vault files are written with mode 600."""
     path = ensure_vault("secure")
@@ -181,3 +198,36 @@ def test_write_vault_sorted_keys(config_dir: Path) -> None:
     lines = vault_file_path("sorted").read_text(encoding="utf-8").splitlines()
     assert lines[0].startswith("export alpha=")
     assert lines[1].startswith("export zebra=")
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Unix file permissions not enforced on Windows"
+)
+def test_write_vault_is_atomic_and_preserves_permissions(config_dir: Path) -> None:
+    """write_vault should atomically replace the target and keep mode 600."""
+    ensure_vault("atomic")
+    path = vault_file_path("atomic")
+    path.write_text("export ip='1.1.1.1'\n", encoding="utf-8")
+    os.chmod(path, 0o600)
+
+    write_vault(path, {"ip": "2.2.2.2"})
+    assert "2.2.2.2" in path.read_text(encoding="utf-8")
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="fcntl locking is Unix-only")
+def test_write_lock_blocks_other_writers(config_dir: Path) -> None:
+    """A held advisory lock should cause a second writer to fail quickly."""
+    import fcntl
+
+    from ctx.storage import _lock_file_path
+
+    ensure_vault("locked")
+    lock_path = _lock_file_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(lock_path, "a+", encoding="utf-8") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(RuntimeError) as exc:
+            set_variable("locked", "ip", "10.0.0.2")
+        assert "locked" in str(exc.value).lower()

@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from ctx.storage import vault_file_path
 
@@ -85,7 +85,7 @@ def print_vault_path_for_active() -> int:
     Returns:
         Exit code (0 on success).
     """
-    from ctx.errors import CtxError, NoActiveVaultError
+    from ctx.errors import CtxError
     from ctx.storage import require_active_vault
 
     try:

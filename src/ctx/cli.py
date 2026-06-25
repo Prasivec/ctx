@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import os
+import shlex
 import sys
-from typing import List, Optional, Sequence
+from typing import Optional, Sequence
 
 from ctx import __version__
 from ctx.errors import (
@@ -26,6 +28,7 @@ from ctx.storage import (
     get_variable,
     list_vaults,
     read_vault,
+    read_vault_strict,
     rename_vault,
     require_active_vault,
     require_vault_path,
@@ -229,6 +232,38 @@ def cmd_shell_keys_for(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_shell_load(args: argparse.Namespace) -> int:
+    """Internal: emit sanitized shell code to (un)load a vault safely.
+
+    This command prints shell code intended to be eval'd by bash/zsh shell
+    integration. It never sources the user-editable vault file directly.
+    """
+    validate_vault_name(args.vault)
+    path = require_vault_path(args.vault)
+
+    prev_loaded = os.environ.get("CTX_LOADED_VAULT", "").strip()
+    if prev_loaded:
+        try:
+            validate_vault_name(prev_loaded)
+        except Exception:
+            prev_loaded = ""
+
+    if prev_loaded and prev_loaded != args.vault and vault_exists(prev_loaded):
+        prev_vars = read_vault(vault_file_path(prev_loaded))
+        for key in sorted(prev_vars):
+            # Keys from read_vault are already validated, but keep this safe.
+            validate_key_name(key)
+            print(f"unset {key}")
+
+    variables = read_vault_strict(path)
+    for key in sorted(variables):
+        validate_key_name(key)
+        print(f"export {key}={shlex.quote(variables[key])}")
+
+    print(f"export CTX_LOADED_VAULT={shlex.quote(args.vault)}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level argparse parser with all subcommands."""
     parser = argparse.ArgumentParser(
@@ -409,6 +444,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_shell_keys_for.add_argument("vault", help=argparse.SUPPRESS)
     p_shell_keys_for.set_defaults(func=cmd_shell_keys_for)
 
+    p_shell_load = shell_sub.add_parser("load", help=argparse.SUPPRESS)
+    p_shell_load.add_argument("vault", help=argparse.SUPPRESS)
+    p_shell_load.set_defaults(func=cmd_shell_load)
+
     return parser
 
 
@@ -466,7 +505,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     try:
-        return args.func(args)
+        return int(args.func(args))
     except Exception as exc:
         return handle_error(exc)
 

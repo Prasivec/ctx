@@ -17,6 +17,7 @@ access to context-specific values such as IP addresses, domains, credentials,
 tokens, hosts, and ports.
 .PP
 Vaults are stored as env-compatible files under
+\fI$XDG_CONFIG_HOME/ctx/vaults/\fR when \fBXDG_CONFIG_HOME\fR is set, otherwise
 \fI\(ti/.config/ctx/vaults/\fR. The active vault is terminal-local via the
 \fBCTX_ACTIVE_VAULT\fR environment variable, set by shell integration when
 you run \fBctx load\fR.
@@ -33,7 +34,7 @@ Create a new empty vault file. Does not load the vault.
 .TP
 .B ctx load [\fIvault\fR]
 Load a vault into the current shell. With a vault name, selects that vault,
-unloads variables from any previously loaded vault, then sources variables.
+unloads variables from any previously loaded vault, then loads variables.
 Fails if the named vault does not exist; use \fBctx create\fR first.
 Without a vault name, re-sources the active vault from disk. Handled by shell
 integration.

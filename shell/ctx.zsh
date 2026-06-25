@@ -38,17 +38,12 @@ _ctx_load_active_vault() {
         print -u2 "error: No active vault in this terminal. Run 'ctx load <vault>' first."
         return 1
     fi
-    local _vault_path
-    _vault_path="$("$_bin" _shell path)" || return $?
-    if [[ ! -f "$_vault_path" ]]; then
-        print -u2 "error: vault file not found: $_vault_path"
-        return 1
-    fi
-    if [[ -n "${CTX_LOADED_VAULT:-}" ]]; then
-        _ctx_unload_vault "$_bin" "$CTX_LOADED_VAULT"
-    fi
-    source "$_vault_path"
-    export CTX_LOADED_VAULT="$CTX_ACTIVE_VAULT"
+    # Hardened load: do not source user-editable vault files. Instead, ask the
+    # backend to parse the vault and emit sanitized export/unset statements.
+    local _vault="${CTX_ACTIVE_VAULT}"
+    local _out
+    _out="$("$_bin" _shell load "$_vault")" || return $?
+    eval "$_out"
     return 0
 }
 

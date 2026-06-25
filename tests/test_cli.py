@@ -33,7 +33,11 @@ def test_help_exits_zero() -> None:
     assert main(["--help"]) == 0
 
 
-def test_set_get_show(config_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_set_get_show(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """set and get commands work with active vault."""
     assert run_cli(["set", "ip", "10.10.10.1"], monkeypatch) == 0
     assert run_cli(["get", "ip"], monkeypatch) == 0
@@ -46,7 +50,11 @@ def test_set_get_show(config_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys:
     assert "10.10.10.1" in show_out
 
 
-def test_set_with_spaces(config_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_set_with_spaces(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """set preserves values containing spaces."""
     assert run_cli(["set", "desc", "hello", "world"], monkeypatch) == 0
     assert run_cli(["get", "desc"], monkeypatch) == 0
@@ -65,12 +73,18 @@ def test_set_without_active_vault(monkeypatch: pytest.MonkeyPatch) -> None:
     assert main(["set", "ip", "1.2.3.4"]) == 1
 
 
-def test_invalid_key_rejected(config_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_invalid_key_rejected(
+    config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Invalid key names are rejected."""
     assert run_cli(["set", "bad-key", "value"], monkeypatch) == 1
 
 
-def test_list_vaults(config_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_list_vaults(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """list shows existing vaults."""
     ensure_vault("another")
     assert main(["list"]) == 0
@@ -79,7 +93,11 @@ def test_list_vaults(config_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: 
     assert "another" in out
 
 
-def test_path_command(config_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_path_command(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """path prints the active vault file path."""
     monkeypatch.setenv("CTX_ACTIVE_VAULT", "testvault")
     assert main(["path"]) == 0
@@ -123,7 +141,9 @@ def test_duplicate_command(config_dir: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_validation_warning_on_set(
-    config_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Validation warnings go to stderr but do not fail the command."""
     code = run_cli(["set", "ip", "not-valid"], monkeypatch)
@@ -132,14 +152,22 @@ def test_validation_warning_on_set(
     assert "warning:" in err
 
 
-def test_shell_path(config_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_shell_path(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """_shell path prints vault path for shell load."""
     monkeypatch.setenv("CTX_ACTIVE_VAULT", "testvault")
     assert main(["_shell", "path"]) == 0
     assert "testvault.env" in capsys.readouterr().out
 
 
-def test_shell_keys(config_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_shell_keys(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """_shell keys lists keys for completions."""
     run_cli(["set", "ip", "1.2.3.4"], monkeypatch)
     run_cli(["set", "user", "admin"], monkeypatch)
@@ -173,7 +201,9 @@ def test_create_duplicate_fails(config_dir: Path) -> None:
     assert main(["create", "exists"]) == 1
 
 
-def test_load_missing_vault_fails(config_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_load_missing_vault_fails(
+    config_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """load fails when vault does not exist and suggests create."""
     code = main(["load", "frest"])
     assert code == 1
@@ -189,7 +219,9 @@ def test_load_existing_vault(config_dir: Path) -> None:
     assert main(["load", "forest"]) == 0
 
 
-def test_load_reload_active_vault(config_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_reload_active_vault(
+    config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """load without vault name validates active vault exists."""
     ensure_vault("active")
     monkeypatch.setenv("CTX_ACTIVE_VAULT", "active")
