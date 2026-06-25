@@ -40,14 +40,15 @@ remove_shell_rc_block() {
         if ! grep -qF "$CTX_RC_BEGIN" "$rc" 2>/dev/null; then
             continue
         fi
-        python3 - "$rc" <<'PY'
+        python3 - "$rc" "$CTX_RC_BEGIN" "$CTX_RC_END" <<'PY'
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
+begin = sys.argv[2]
+end = sys.argv[3]
+
 text = path.read_text(encoding="utf-8")
-begin = "# >>> ctx shell integration >>>"
-end = "# <<< ctx shell integration <<<"
 start = text.find(begin)
 while start != -1:
     stop = text.find(end, start)
