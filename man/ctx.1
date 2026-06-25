@@ -36,12 +36,12 @@ Create a new empty vault file. Does not load the vault.
 Load a vault into the current shell. With a vault name, selects that vault,
 unloads variables from any previously loaded vault, then loads variables.
 Fails if the named vault does not exist; use \fBctx create\fR first.
-Without a vault name, re-sources the active vault from disk. Handled by shell
-integration.
+Without a vault name, reloads the active vault's variables from disk. Handled
+by shell integration.
 .TP
 .B ctx unload
 Unload the currently loaded vault from this shell session. Removes all
-variables that were sourced from the vault. Does not delete the vault file.
+variables that were loaded from the vault. Does not delete the vault file.
 Handled by shell integration.
 .TP
 .B ctx current
@@ -52,6 +52,8 @@ List all vault names.
 .TP
 .B ctx set \fIkey\fR \fIvalue\fR
 Set a variable in the active vault. Values with spaces should be quoted.
+Values are single-line only: a value containing a newline or carriage return
+is rejected because the vault format is line-oriented.
 Validation warnings may be printed to stderr but do not block the operation.
 The shell function automatically reloads the vault after each successful
 \fBctx set\fR so shell variables (e.g. \fB$ip\fR) are updated immediately.
@@ -164,6 +166,21 @@ Vault files are stored in plaintext on disk with mode 600. Directories use
 mode 700. There is no encryption in v1. Secrets are not masked in output.
 Users are expected to protect their home directory and vault files accordingly.
 Do not commit vault files to version control.
+.PP
+Vault files are user-editable data files. They are \fBnot\fR sourced as shell
+scripts. When you run \fBctx load\fR or \fBctx set\fR, the \fBctxctl\fR backend
+parses the vault as data and generates only sanitized \fBexport\fR/\fBunset\fR
+statements (with robust quoting) for the shell to evaluate. Arbitrary shell
+code placed in a vault file is therefore never executed on load.
+.PP
+Loaded variables are exported and visible to child processes. Treat secrets
+accordingly. Values are limited to a single line; multiline values are not
+supported by the vault format.
+.PP
+The configuration directory honors \fBXDG_CONFIG_HOME\fR: vaults live under
+\fI$XDG_CONFIG_HOME/ctx/vaults/\fR when that variable is set, otherwise under
+\fI\(ti/.config/ctx/vaults/\fR. The installer and uninstaller resolve the same
+location.
 .SH SEE ALSO
 .BR ctxctl (1)
 

@@ -11,6 +11,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
+from ctx.errors import (
+    KeyNotFoundError,
+    VaultExistsError,
+    VaultNotFoundError,
+)
+from ctx.validation import validate_key_name, validate_value, validate_vault_name
+
 _fcntl_mod: Any
 try:  # Linux/Unix only
     import fcntl as _fcntl_mod
@@ -18,13 +25,6 @@ except Exception:  # pragma: no cover
     _fcntl_mod = None
 
 fcntl: Any = _fcntl_mod
-
-from ctx.errors import (
-    KeyNotFoundError,
-    VaultExistsError,
-    VaultNotFoundError,
-)
-from ctx.validation import validate_key_name, validate_vault_name
 
 
 def default_config_dir() -> Path:
@@ -92,19 +92,28 @@ def _lock_file_path() -> Path:
 
 
 @contextmanager
-def _acquire_write_lock(timeout_s: float = 2.0) -> Iterator[int]:
-    """Acquire an exclusive advisory lock for vault mutations.
+def acquire_vault_lock(timeout_s: float = 5.0) -> Iterator[int]:
+    """Acquire an exclusive advisory lock for the full mutation transaction.
 
-    Uses a single lock file for all vault write operations.
+    A single lock file guards all vault read-modify-write operations so that
+    concurrent terminals cannot interleave or overwrite each other's changes.
+    The lock must be held for the entire transaction: read, modify, and the
+    atomic write.
+
+    The lock is advisory and based on ``fcntl.flock``. It is NOT reentrant:
+    do not acquire it twice in the same call path or the second acquisition
+    will block and eventually time out. Use the ``*_unlocked`` write helpers
+    from inside a locked transaction.
 
     Args:
-        timeout_s: Maximum time to wait for the lock.
+        timeout_s: Maximum time to wait for the lock before failing.
 
     Yields:
-        OS-level file descriptor holding the lock.
+        OS-level file descriptor holding the lock (``-1`` when locking is
+        unavailable on the platform).
 
     Raises:
-        RuntimeError: If locking is unsupported or lock cannot be acquired.
+        RuntimeError: If the lock cannot be acquired within ``timeout_s``.
     """
     # On non-Unix platforms (notably Windows), keep ctx functional by treating
     # locking as a no-op. Linux CI enforces real locking behavior.
@@ -125,7 +134,8 @@ def _acquire_write_lock(timeout_s: float = 2.0) -> Iterator[int]:
             if (time.monotonic() - start) >= timeout_s:
                 os.close(fd)
                 raise RuntimeError(
-                    "Vault directory is locked by another ctx process. Try again."
+                    "Vault directory is locked by another ctx process. "
+                    "Another ctx command may be running; try again shortly."
                 )
             time.sleep(0.05)
 
@@ -136,6 +146,35 @@ def _acquire_write_lock(timeout_s: float = 2.0) -> Iterator[int]:
             fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
+
+
+# Backwards-compatible alias for the previous private name.
+_acquire_write_lock = acquire_vault_lock
+
+
+def _fsync_dir(dir_path: Path) -> None:
+    """Best-effort fsync of a directory to improve crash consistency.
+
+    Directory fsync is supported on Linux and most Unix filesystems. On
+    platforms where opening a directory or fsyncing it is unsupported, this
+    is a graceful no-op.
+
+    Args:
+        dir_path: Directory to flush.
+    """
+    if fcntl is None:
+        # Windows cannot os.open() a directory for fsync; skip gracefully.
+        return
+    try:
+        dir_fd = os.open(str(dir_path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
 
 
 def parse_shell_value(raw: str) -> str:
@@ -169,8 +208,8 @@ def parse_shell_value(raw: str) -> str:
 def read_vault_strict(path: Path) -> Dict[str, str]:
     """Read variables from a vault, rejecting unsafe or malformed lines.
 
-    This is intended for shell-loading, where sourcing arbitrary lines would be
-    dangerous. Every non-empty, non-comment line must match KEY=VALUE or
+    This is intended for shell-loading, where evaluating arbitrary lines would
+    be dangerous. Every non-empty, non-comment line must match KEY=VALUE or
     export KEY=VALUE and the key must be a safe shell identifier.
 
     Args:
@@ -244,8 +283,16 @@ def read_vault(path: Path) -> Dict[str, str]:
     return variables
 
 
-def write_vault(path: Path, variables: Dict[str, str]) -> None:
-    """Write variables to a vault env file with safe shell quoting.
+def _write_vault_unlocked(path: Path, variables: Dict[str, str]) -> None:
+    """Atomically write variables to a vault file WITHOUT taking the lock.
+
+    The caller MUST already hold the vault lock (see ``acquire_vault_lock``).
+    This is the inner half of every mutation transaction so that the read,
+    modify, and write all happen under a single lock acquisition.
+
+    The write is atomic: contents are written to a same-directory temp file,
+    flushed and fsynced, then ``os.replace``-d into place. The parent
+    directory is fsynced afterwards (best effort) for crash consistency.
 
     Args:
         path: Destination vault file path.
@@ -255,6 +302,8 @@ def write_vault(path: Path, variables: Dict[str, str]) -> None:
     lines: List[str] = []
     for key in sorted(variables):
         validate_key_name(key)
+        # Reject values that would break the line-oriented vault format.
+        validate_value(variables[key])
         quoted = shlex.quote(variables[key])
         lines.append(f"export {key}={quoted}")
 
@@ -262,31 +311,47 @@ def write_vault(path: Path, variables: Dict[str, str]) -> None:
     if text:
         text += "\n"
 
-    # Atomic replacement: write to a temp file in the same directory, fsync,
-    # then replace the target in one step.
-    ensure_directories()
     tmp_path: Optional[Path] = None
-    with _acquire_write_lock():
-        try:
-            fd, tmp_name = tempfile.mkstemp(
-                prefix=f".{path.name}.",
-                suffix=".tmp",
-                dir=str(path.parent),
-            )
-            tmp_path = Path(tmp_name)
-            os.chmod(tmp_path, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-                f.write(text)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, path)
-            os.chmod(path, 0o600)
-        finally:
-            if tmp_path is not None and tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
+    try:
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=str(path.parent),
+        )
+        tmp_path = Path(tmp_name)
+        os.chmod(tmp_path, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None
+        os.chmod(path, 0o600)
+        # Flush the directory entry so the rename survives a crash on Linux.
+        _fsync_dir(path.parent)
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def write_vault(path: Path, variables: Dict[str, str]) -> None:
+    """Write variables to a vault env file with safe shell quoting.
+
+    Acquires the vault lock for the duration of the atomic write. For
+    read-modify-write transactions, take the lock once via
+    ``acquire_vault_lock`` and call ``_write_vault_unlocked`` instead, to
+    avoid stale reads and double (non-reentrant) lock acquisition.
+
+    Args:
+        path: Destination vault file path.
+        variables: Variables to persist.
+    """
+    ensure_directories()
+    with acquire_vault_lock():
+        _write_vault_unlocked(path, variables)
 
 
 def list_vaults() -> List[str]:
@@ -399,10 +464,12 @@ def set_variable(vault_name: str, key: str, value: str) -> None:
         value: Variable value.
     """
     validate_key_name(key)
+    validate_value(value)
     path = require_vault_path(vault_name)
-    variables = read_vault(path)
-    variables[key] = value
-    write_vault(path, variables)
+    with acquire_vault_lock():
+        variables = read_vault(path)
+        variables[key] = value
+        _write_vault_unlocked(path, variables)
 
 
 def unset_variable(vault_name: str, key: str) -> None:
@@ -419,11 +486,12 @@ def unset_variable(vault_name: str, key: str) -> None:
     path = vault_file_path(vault_name)
     if not path.exists():
         raise VaultNotFoundError(f"Vault '{vault_name}' does not exist.")
-    variables = read_vault(path)
-    if key not in variables:
-        raise KeyNotFoundError(f"Key '{key}' not found in vault '{vault_name}'.")
-    del variables[key]
-    write_vault(path, variables)
+    with acquire_vault_lock():
+        variables = read_vault(path)
+        if key not in variables:
+            raise KeyNotFoundError(f"Key '{key}' not found in vault '{vault_name}'.")
+        del variables[key]
+        _write_vault_unlocked(path, variables)
 
 
 def clear_vault(vault_name: str) -> None:
@@ -431,7 +499,8 @@ def clear_vault(vault_name: str) -> None:
     path = vault_file_path(vault_name)
     if not path.exists():
         raise VaultNotFoundError(f"Vault '{vault_name}' does not exist.")
-    write_vault(path, {})
+    with acquire_vault_lock():
+        _write_vault_unlocked(path, {})
 
 
 def delete_vault(vault_name: str) -> None:
@@ -446,8 +515,11 @@ def delete_vault(vault_name: str) -> None:
     path = vault_file_path(vault_name)
     if not path.exists():
         raise VaultNotFoundError(f"Vault '{vault_name}' does not exist.")
-    with _acquire_write_lock():
+    with acquire_vault_lock():
+        if not path.exists():
+            raise VaultNotFoundError(f"Vault '{vault_name}' does not exist.")
         path.unlink()
+        _fsync_dir(path.parent)
 
 
 def rename_vault(old_name: str, new_name: str) -> None:
@@ -469,9 +541,14 @@ def rename_vault(old_name: str, new_name: str) -> None:
         raise VaultNotFoundError(f"Vault '{old_name}' does not exist.")
     if new_path.exists():
         raise VaultExistsError(f"Vault '{new_name}' already exists.")
-    with _acquire_write_lock():
+    with acquire_vault_lock():
+        if not old_path.exists():
+            raise VaultNotFoundError(f"Vault '{old_name}' does not exist.")
+        if new_path.exists():
+            raise VaultExistsError(f"Vault '{new_name}' already exists.")
         old_path.rename(new_path)
         os.chmod(new_path, 0o600)
+        _fsync_dir(new_path.parent)
 
 
 def duplicate_vault(source_name: str, dest_name: str) -> None:
@@ -493,9 +570,13 @@ def duplicate_vault(source_name: str, dest_name: str) -> None:
         raise VaultNotFoundError(f"Vault '{source_name}' does not exist.")
     if dest_path.exists():
         raise VaultExistsError(f"Vault '{dest_name}' already exists.")
-    variables = read_vault(source_path)
-    # write_vault takes the write lock.
-    write_vault(dest_path, variables)
+    with acquire_vault_lock():
+        if not source_path.exists():
+            raise VaultNotFoundError(f"Vault '{source_name}' does not exist.")
+        if dest_path.exists():
+            raise VaultExistsError(f"Vault '{dest_name}' already exists.")
+        variables = read_vault(source_path)
+        _write_vault_unlocked(dest_path, variables)
 
 
 def get_active_vault_from_env() -> Optional[str]:

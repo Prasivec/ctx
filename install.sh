@@ -10,7 +10,15 @@ SHARE_DIR="$PREFIX/share/ctx"
 COMPLETIONS_DIR="$SHARE_DIR/completions"
 SHELL_DIR="$SHARE_DIR/shell"
 MAN_DIR="$PREFIX/share/man/man1"
-CONFIG_DIR="$HOME/.config/ctx"
+
+# Resolve the config directory consistently with the Python backend, which
+# honors XDG_CONFIG_HOME. Treat an unset OR empty value as "use the default".
+if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+    CONFIG_BASE="$XDG_CONFIG_HOME"
+else
+    CONFIG_BASE="$HOME/.config"
+fi
+CONFIG_DIR="$CONFIG_BASE/ctx"
 VAULTS_DIR="$CONFIG_DIR/vaults"
 
 CTX_RC_BEGIN="# >>> ctx shell integration >>>"

@@ -5,7 +5,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  python:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -25,33 +25,46 @@ jobs:
           python -m pip install -e ".[dev]"
 
       - name: Lint (ruff)
-        run: |
-          ruff check .
+        run: ruff check .
 
       - name: Format (ruff)
-        run: |
-          ruff format --check .
+        run: ruff format --check .
 
       - name: Type check (mypy)
-        run: |
-          mypy
+        run: mypy
 
-      - name: Shell syntax (bash -n)
-        run: |
-          bash -n install.sh uninstall.sh shell/ctx.sh
-
-      - name: Shellcheck (if available)
-        run: |
-          if command -v shellcheck >/dev/null 2>&1; then
-            shellcheck install.sh uninstall.sh shell/ctx.sh
-          else
-            echo "shellcheck not installed; skipping"
-          fi
+      - name: Compile / import sanity
+        run: python -m compileall src
 
       - name: Tests
-        run: |
-          python -m pytest
+        run: python -m pytest
 
       - name: Build sdist/wheel
+        run: python -m build
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shell tooling
         run: |
-          python -m build
+          sudo apt-get update
+          sudo apt-get install -y zsh shellcheck
+
+      - name: Bash syntax (bash -n)
+        run: |
+          bash -n install.sh
+          bash -n uninstall.sh
+          bash -n bin/ctx
+          bash -n shell/ctx.sh
+          bash -n completions/ctx.bash
+
+      - name: Zsh syntax (zsh -n)
+        run: |
+          zsh -n shell/ctx.zsh
+          zsh -n completions/ctx.zsh
+
+      - name: ShellCheck
+        run: |
+          shellcheck install.sh uninstall.sh bin/ctx shell/ctx.sh completions/ctx.bash

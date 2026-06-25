@@ -36,7 +36,7 @@ The installer will:
 - Configure **shell integration** automatically in those rc files
 - Copy completions to `~/.local/share/ctx/completions/`
 - Install the man page to `~/.local/share/man/man1/ctx.1`
-- Create `~/.config/ctx/vaults/` with permissions `700`
+- Create the vault directory (`$XDG_CONFIG_HOME/ctx/vaults/` if `XDG_CONFIG_HOME` is set, otherwise `~/.config/ctx/vaults/`) with permissions `700`
 
 After install, open a **new terminal** or run `source ~/.zshrc` (or `~/.bashrc`). The `ctx` command will then be available.
 
@@ -105,8 +105,8 @@ Each session exports its own `CTX_ACTIVE_VAULT`. They do not interfere.
 
 | Command       | What it does |
 |---------------|--------------|
-| `ctx load <vault>` | Load an **existing** vault into this terminal. Unloads variables from the previously loaded vault, then sources the new one. Fails if the vault does not exist — use `ctx create` first. |
-| `ctx load`    | Re-source the **active** vault from disk (no vault switch). Useful after `ctx edit`, `ctx unset`, or `ctx clear`. |
+| `ctx load <vault>` | Load an **existing** vault into this terminal. Unloads variables from the previously loaded vault, then applies the new one. Fails if the vault does not exist — use `ctx create` first. |
+| `ctx load`    | Reload the **active** vault's variables from disk (no vault switch). Useful after `ctx edit`, `ctx unset`, or `ctx clear`. |
 | `ctx unload`  | Remove all variables from the loaded vault from this shell session. Clears active/loaded state. Does not delete the vault file. |
 | `ctx set`     | Writes a variable to the active vault, then **auto-reloads** the vault. Updated values are immediately available as `$key`. |
 
@@ -140,10 +140,12 @@ Backend help: `ctxctl --help` and `ctxctl <command> --help`.
 - Vaults are **plaintext** env files at:
   - `$XDG_CONFIG_HOME/ctx/vaults/<name>.env` (when `XDG_CONFIG_HOME` is set)
   - otherwise `~/.config/ctx/vaults/<name>.env`
-- Permissions: `~/.config/ctx` and `vaults/` are `700`; vault files are `600`.
+- The installer and uninstaller resolve this same path, honoring `XDG_CONFIG_HOME` (an unset or empty value falls back to `~/.config`).
+- Permissions: the config dir and `vaults/` are `700`; vault files are `600`.
 - **No encryption** in v1.
 - Secrets are **not masked** in `ctx show` or `ctx get`.
 - Validation **warns** on common keys (IP, port, URL, domain) but never blocks.
+- Values are **single-line** only. A value containing a newline or carriage return is rejected, because the vault format is line-oriented `KEY=VALUE` storage. Values may freely contain spaces, quotes, semicolons, dollar signs, backticks, and parentheses — they are stored and re-emitted as quoted data, never executed.
 - Do not commit vault files to git.
 
 ### Hardened loading
@@ -152,6 +154,11 @@ Vault files are user-editable, plaintext env-style files. **They are not sourced
 When you run `ctx load` or `ctx set`, the Python backend parses the vault as data and the shell
 integration evaluates only backend-generated `export` / `unset` statements with robust quoting.
 This prevents arbitrary shell code in vault files from executing on load.
+
+Loading is transactional from the shell's perspective: the backend-generated script is produced
+first and only applied if generation succeeds. If a vault is malformed or contains an unsafe
+variable name, `ctx load` fails with a clear error, returns non-zero, and leaves your previous
+vault and its variables untouched — `CTX_ACTIVE_VAULT` is never pointed at a vault that failed to load.
 
 Remember: exported variables are visible to child processes. Treat secrets accordingly.
 
@@ -245,10 +252,16 @@ Ensure `~/.local/share/man` is in `MANPATH`, or run `man -l ~/.local/share/man/m
 ```bash
 python3 -m pip install -e ".[dev]"
 python -m pytest
+python -m compileall src
 ruff check .
 ruff format --check .
 mypy
-bash -n install.sh uninstall.sh shell/ctx.sh
+python -m build
+
+# Shell checks (Linux; install zsh and shellcheck first)
+bash -n install.sh uninstall.sh bin/ctx shell/ctx.sh completions/ctx.bash
+zsh -n shell/ctx.zsh completions/ctx.zsh
+shellcheck install.sh uninstall.sh bin/ctx shell/ctx.sh completions/ctx.bash
 ```
 
 ## Uninstall

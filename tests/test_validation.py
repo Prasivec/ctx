@@ -7,7 +7,12 @@ import io
 import pytest
 
 from ctx.errors import ValidationError
-from ctx.validation import validate_key_name, validate_vault_name, warn_value
+from ctx.validation import (
+    validate_key_name,
+    validate_value,
+    validate_vault_name,
+    warn_value,
+)
 
 
 def test_valid_vault_names() -> None:
@@ -34,6 +39,34 @@ def test_invalid_key_names() -> None:
     for key in ("", "2bad", "bad-key", "bad.key"):
         with pytest.raises(ValidationError):
             validate_key_name(key)
+
+
+def test_validate_value_rejects_newline() -> None:
+    """A literal newline in a value is rejected."""
+    with pytest.raises(ValidationError):
+        validate_value("a\nb")
+
+
+def test_validate_value_rejects_carriage_return() -> None:
+    """A carriage return in a value is rejected."""
+    with pytest.raises(ValidationError):
+        validate_value("a\rb")
+
+
+def test_validate_value_accepts_metacharacters() -> None:
+    """Single-line values with shell metacharacters are accepted."""
+    for value in (
+        "10.10.10.10",
+        "p@ss word",
+        "abc;def",
+        "$(id)",
+        "hello ' world",
+        "`id`",
+        "(test)",
+        "$HOME",
+        "",
+    ):
+        validate_value(value)
 
 
 def test_warn_invalid_ip(capsys: pytest.CaptureFixture[str]) -> None:

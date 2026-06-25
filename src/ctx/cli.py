@@ -37,13 +37,18 @@ from ctx.storage import (
     vault_file_path,
     vault_exists,
 )
-from ctx.validation import validate_key_name, validate_vault_name, warn_value
+from ctx.validation import (
+    validate_key_name,
+    validate_value,
+    validate_vault_name,
+    warn_value,
+)
 
 EPILOG = """
 Shell integration:
   ctx load, ctx unload, and ctx set are handled by the shell function.
   ctx load <vault> loads a vault and unloads the previous vault when switching.
-  ctx load (no vault) re-sources the active vault from disk.
+  ctx load (no vault) reloads the active vault's variables from disk.
   ctx unload removes loaded vault variables from this shell session.
   ctx set automatically reloads the vault after each successful write.
   Source shell/ctx.sh or shell/ctx.zsh and use the 'ctx' command in your shell.
@@ -126,6 +131,7 @@ def cmd_set(args: argparse.Namespace) -> int:
     vault = require_active_vault()
     validate_key_name(args.key)
     value = _join_value(args.value)
+    validate_value(value)
     warn_value(args.key, value)
     set_variable(vault, args.key, value)
     return 0
@@ -210,7 +216,7 @@ def cmd_edit(_args: argparse.Namespace) -> int:
 
 
 def cmd_shell_path(_args: argparse.Namespace) -> int:
-    """Internal: print active vault path for shell sourcing."""
+    """Internal: print active vault path for shell reload helpers."""
     return print_vault_path_for_active()
 
 
@@ -308,8 +314,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="load a vault into this shell (shell integration)",
         description=(
             "Load an existing vault into the shell. With a vault name, selects that "
-            "vault, unloads any previously loaded vault, and sources variables. "
-            "Without a vault name, re-sources the active vault from disk. "
+            "vault, unloads any previously loaded vault, and applies its variables. "
+            "Without a vault name, reloads the active vault's variables from disk. "
             "Fails if the vault does not exist; use 'ctx create' first."
         ),
     )

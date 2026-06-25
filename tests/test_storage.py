@@ -9,8 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from ctx.errors import KeyNotFoundError, VaultExistsError, VaultNotFoundError
+from ctx.errors import (
+    KeyNotFoundError,
+    ValidationError,
+    VaultExistsError,
+    VaultNotFoundError,
+)
 from ctx.storage import (
+    acquire_vault_lock,
     clear_vault,
     create_vault,
     delete_vault,
@@ -231,3 +237,136 @@ def test_write_lock_blocks_other_writers(config_dir: Path) -> None:
         with pytest.raises(RuntimeError) as exc:
             set_variable("locked", "ip", "10.0.0.2")
         assert "locked" in str(exc.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# Full-transaction advisory locking
+# ---------------------------------------------------------------------------
+
+
+def test_sequential_locked_updates(config_dir: Path) -> None:
+    """Repeated locked updates apply cleanly without leaving stale lock state."""
+    ensure_vault("seq")
+    for i in range(5):
+        set_variable("seq", "ip", f"10.0.0.{i}")
+    assert get_variable("seq", "ip") == "10.0.0.4"
+    # The lock must be released after each transaction; a fresh write succeeds.
+    set_variable("seq", "user", "admin")
+    assert get_variable("seq", "user") == "admin"
+
+
+def test_two_updates_to_different_keys_preserve_both(config_dir: Path) -> None:
+    """Independent read-modify-write updates must not clobber each other."""
+    ensure_vault("multi")
+    set_variable("multi", "ip", "10.10.10.10")
+    set_variable("multi", "user", "operator")
+    variables = read_vault(vault_file_path("multi"))
+    assert variables == {"ip": "10.10.10.10", "user": "operator"}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="fcntl locking is Unix-only")
+def test_lock_acquire_and_release(config_dir: Path) -> None:
+    """acquire_vault_lock yields a valid fd and releases it on exit."""
+    ensure_directories()
+    with acquire_vault_lock() as fd:
+        assert isinstance(fd, int)
+        assert fd >= 0
+    # After release, the same process can take the lock again immediately.
+    with acquire_vault_lock() as fd2:
+        assert fd2 >= 0
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="fcntl locking is Unix-only")
+def test_lock_already_held_raises(config_dir: Path) -> None:
+    """Holding the lock makes a second acquisition fail with a clear error."""
+    ensure_directories()
+    with acquire_vault_lock():
+        with pytest.raises(RuntimeError) as exc:
+            with acquire_vault_lock(timeout_s=0.1):
+                pass
+    assert "locked" in str(exc.value).lower()
+
+
+def test_mutations_do_not_deadlock(config_dir: Path) -> None:
+    """Public mutation functions must not double-acquire the lock."""
+    ensure_vault("nodl")
+    set_variable("nodl", "ip", "1.1.1.1")
+    set_variable("nodl", "user", "admin")
+    unset_variable("nodl", "user")
+    clear_vault("nodl")
+    duplicate_vault("nodl", "nodl2")
+    rename_vault("nodl2", "nodl3")
+    delete_vault("nodl3")
+    assert read_vault(vault_file_path("nodl")) == {}
+
+
+# ---------------------------------------------------------------------------
+# Atomic write / parent-directory fsync
+# ---------------------------------------------------------------------------
+
+
+def test_failed_write_does_not_corrupt_original(
+    config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the atomic replace fails, the original vault content is preserved."""
+    ensure_vault("safe")
+    set_variable("safe", "ip", "1.1.1.1")
+    path = vault_file_path("safe")
+    original = path.read_text(encoding="utf-8")
+
+    import ctx.storage as storage_mod
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(storage_mod.os, "replace", boom)
+    with pytest.raises(OSError):
+        set_variable("safe", "ip", "2.2.2.2")
+
+    # Original file is untouched and no temp files linger in the vault dir.
+    assert path.read_text(encoding="utf-8") == original
+    leftovers = [p for p in path.parent.glob(".safe.env.*") if p.suffix == ".tmp"]
+    assert leftovers == []
+
+
+def test_fsync_dir_helper_is_best_effort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_fsync_dir flushes a directory and tolerates platform limitations."""
+    from ctx.storage import _fsync_dir
+
+    # Exercises the happy path (real dir) without raising.
+    _fsync_dir(tmp_path)
+
+    # A non-existent directory must be handled gracefully (no exception).
+    _fsync_dir(tmp_path / "does-not-exist")
+
+
+# ---------------------------------------------------------------------------
+# Single-line value policy
+# ---------------------------------------------------------------------------
+
+
+def test_set_rejects_newline_value(config_dir: Path) -> None:
+    """Values containing a literal newline are rejected."""
+    ensure_vault("nl")
+    with pytest.raises(ValidationError):
+        set_variable("nl", "note", "line1\nline2")
+    # The vault must not have been corrupted.
+    assert read_vault(vault_file_path("nl")) == {}
+
+
+def test_set_rejects_carriage_return_value(config_dir: Path) -> None:
+    """Values containing a carriage return are rejected."""
+    ensure_vault("cr")
+    with pytest.raises(ValidationError):
+        set_variable("cr", "note", "line1\rline2")
+    assert read_vault(vault_file_path("cr")) == {}
+
+
+def test_set_accepts_single_line_metacharacters(config_dir: Path) -> None:
+    """Shell metacharacters are fine as single-line values."""
+    ensure_vault("meta")
+    value = "p@ss word; $(id) `id` (x) $HOME ' \" |&"
+    set_variable("meta", "secret", value)
+    assert get_variable("meta", "secret") == value

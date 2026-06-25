@@ -32,15 +32,17 @@ _ctx_unload_vault() {
     fi
 }
 
-_ctx_load_active_vault() {
+# Apply a vault to this shell transactionally.
+#
+# The backend parses the named vault as data and emits sanitized export/unset
+# statements (it never sources the user-editable vault file). The full shell
+# script is generated into a variable FIRST; it is only eval'd if backend
+# generation succeeds. If the vault is malformed/unsafe, generation fails and
+# the shell state is left untouched. The caller owns CTX_ACTIVE_VAULT and must
+# only update it after this function returns success.
+_ctx_apply_vault() {
     local _bin="$1"
-    if [[ -z "${CTX_ACTIVE_VAULT:-}" ]]; then
-        print -u2 "error: No active vault in this terminal. Run 'ctx load <vault>' first."
-        return 1
-    fi
-    # Hardened load: do not source user-editable vault files. Instead, ask the
-    # backend to parse the vault and emit sanitized export/unset statements.
-    local _vault="${CTX_ACTIVE_VAULT}"
+    local _vault="$2"
     local _out
     _out="$("$_bin" _shell load "$_vault")" || return $?
     eval "$_out"
@@ -68,18 +70,24 @@ ctx() {
             return $?
             ;;
         load)
+            local _target
             if [[ $# -ge 1 ]]; then
                 "$_ctxctl_bin" load "$1" || return $?
-                export CTX_ACTIVE_VAULT="$1"
+                _target="$1"
             else
                 if [[ -z "${CTX_ACTIVE_VAULT:-}" ]]; then
                     print -u2 "usage: ctx load <vault>"
                     return 1
                 fi
                 "$_ctxctl_bin" load || return $?
+                _target="${CTX_ACTIVE_VAULT}"
             fi
-            _ctx_load_active_vault "$_ctxctl_bin"
-            return $?
+            # Only mutate shell state if the backend can safely generate the
+            # exports. On failure, the previously loaded vault stays active and
+            # CTX_ACTIVE_VAULT is not changed.
+            _ctx_apply_vault "$_ctxctl_bin" "$_target" || return $?
+            export CTX_ACTIVE_VAULT="$_target"
+            return 0
             ;;
         unload)
             if [[ -z "${CTX_LOADED_VAULT:-}" ]]; then
@@ -96,7 +104,11 @@ ctx() {
                 return 1
             fi
             "$_ctxctl_bin" set "$@" || return $?
-            _ctx_load_active_vault "$_ctxctl_bin"
+            if [[ -z "${CTX_ACTIVE_VAULT:-}" ]]; then
+                print -u2 "error: No active vault in this terminal. Run 'ctx load <vault>' first."
+                return 1
+            fi
+            _ctx_apply_vault "$_ctxctl_bin" "$CTX_ACTIVE_VAULT"
             return $?
             ;;
         current)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -137,3 +139,125 @@ def test_shell_output_is_valid_for_bash_and_zsh(
     # Basic sanity: no bashisms, just export/unset lines.
     assert "source " not in out
     assert ". " not in out
+
+
+# ---------------------------------------------------------------------------
+# Safe value handling via the public set path (round-trips through the writer)
+# ---------------------------------------------------------------------------
+
+SAFE_CASES = [
+    ("ip", "10.10.10.10"),
+    ("user", "admin"),
+    ("password", "p@ss word"),
+    ("token", "abc;def"),
+    ("payload", "$(id)"),
+    ("quoted", "hello ' world"),
+    ("backtick", "`id`"),
+    ("paren", "(test)"),
+    ("dollar", "$HOME"),
+]
+
+
+@pytest.mark.parametrize("key,value", SAFE_CASES)
+def test_shell_load_emits_quoted_safe_exports(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    key: str,
+    value: str,
+) -> None:
+    """Safe single-line values are emitted as quoted, non-executing exports."""
+    from ctx.storage import create_vault, set_variable
+
+    monkeypatch.setenv("CTX_ACTIVE_VAULT", "safe")
+    create_vault("safe")
+    set_variable("safe", key, value)
+
+    assert main(["_shell", "load", "safe"]) == 0
+    out = capsys.readouterr().out
+    lines = [line for line in out.splitlines() if line.strip()]
+    # Only export/unset/CTX_LOADED_VAULT lines are ever emitted.
+    assert all(
+        line.startswith("export ")
+        or line.startswith("unset ")
+        or line.startswith("CTX_LOADED_VAULT=")
+        for line in lines
+    )
+    export_line = next(line for line in lines if line.startswith(f"export {key}="))
+    rhs = export_line.split("=", 1)[1]
+    # Metacharacter-laden values must be quoted, never bare.
+    if any(ch in value for ch in " ;$`()'\"&|"):
+        assert rhs.startswith("'") or rhs.startswith('"')
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "bad-key=value\n",
+        "1bad=value\n",
+        "KEY WITH SPACE=value\n",
+        "$(touch /tmp/pwned)\n",
+        "echo pwned\n",
+        "malformed line without equals\n",
+    ],
+)
+def test_shell_load_rejects_unsafe_or_malformed_lines(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    raw: str,
+) -> None:
+    """Unsafe keys and executable-looking lines are rejected, not emitted."""
+    monkeypatch.setenv("CTX_ACTIVE_VAULT", "danger")
+    _write_raw_vault("danger", raw)
+    assert main(["_shell", "load", "danger"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out.strip() == ""  # nothing emitted for the shell to eval
+    assert "error:" in captured.err.lower()
+
+
+def test_shell_load_accepts_export_prefixed_line(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A normal 'export good=value' line is valid and accepted."""
+    monkeypatch.setenv("CTX_ACTIVE_VAULT", "ok")
+    _write_raw_vault("ok", "export good=value\n")
+    assert main(["_shell", "load", "ok"]) == 0
+    out = capsys.readouterr().out
+    assert any(line.startswith("export good=") for line in out.splitlines())
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None,
+    reason="requires a POSIX bash to evaluate generated output",
+)
+def test_generated_exports_have_no_side_effects_when_evaluated(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """Evaluating generated output in a real shell must not execute payloads."""
+    from ctx.storage import create_vault, set_variable
+
+    marker = tmp_path / "pwned_marker"
+    monkeypatch.setenv("CTX_ACTIVE_VAULT", "evaltest")
+    create_vault("evaltest")
+    # A value that *would* run a command if the output were unsafe.
+    payload = f"$(touch {marker})"
+    set_variable("evaltest", "payload", payload)
+
+    assert main(["_shell", "load", "evaltest"]) == 0
+    generated = capsys.readouterr().out
+
+    # Evaluate the generated script in an isolated bash and echo the variable.
+    result = subprocess.run(
+        ["bash", "-c", f'{generated}\nprintf "%s" "$payload"'],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert not marker.exists()  # the command substitution never executed
+    assert result.stdout == payload  # value preserved verbatim as data

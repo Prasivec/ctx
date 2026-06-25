@@ -64,6 +64,27 @@ def validate_key_name(key: str) -> None:
         )
 
 
+def validate_value(value: str) -> None:
+    """Validate a variable value for the single-line vault format.
+
+    The vault format is a simple line-oriented KEY=VALUE store. Literal
+    newline or carriage-return characters would break parsing on a later
+    load, so they are rejected up front.
+
+    Args:
+        value: Variable value to validate.
+
+    Raises:
+        ValidationError: If the value contains a newline or carriage return.
+    """
+    if "\n" in value or "\r" in value:
+        raise ValidationError(
+            "Values cannot contain newline characters. The vault format "
+            "stores single-line values only; multiline values are not "
+            "supported."
+        )
+
+
 def warn_value(key: str, value: str, stream: Optional[TextIO] = None) -> None:
     """Emit a validation warning for a key/value pair without blocking.
 
