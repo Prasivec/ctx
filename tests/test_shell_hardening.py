@@ -261,3 +261,103 @@ def test_generated_exports_have_no_side_effects_when_evaluated(
     )
     assert not marker.exists()  # the command substitution never executed
     assert result.stdout == payload  # value preserved verbatim as data
+
+
+# ---------------------------------------------------------------------------
+# CTX_LOADED_KEYS-driven unsetting (stale-variable cleanup)
+# ---------------------------------------------------------------------------
+
+
+def test_shell_load_emits_loaded_keys(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Loading a vault records the loaded keys in CTX_LOADED_KEYS."""
+    monkeypatch.setenv("CTX_ACTIVE_VAULT", "lk")
+    monkeypatch.delenv("CTX_LOADED_KEYS", raising=False)
+    monkeypatch.delenv("CTX_LOADED_VAULT", raising=False)
+    _write_raw_vault("lk", "export ip='1.1.1.1'\nexport user='admin'\n")
+
+    assert main(["_shell", "load", "lk"]) == 0
+    out = capsys.readouterr().out
+    assert "export CTX_LOADED_KEYS='ip user'" in out
+
+
+def test_shell_load_unsets_removed_key_on_same_vault_reload(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Reloading the same vault unsets keys that were previously loaded.
+
+    Simulates `ctx unset ip` followed by `ctx load a`: the shell still has
+    `ip` (tracked in CTX_LOADED_KEYS) but the vault no longer defines it.
+    """
+    monkeypatch.setenv("CTX_ACTIVE_VAULT", "a")
+    monkeypatch.setenv("CTX_LOADED_VAULT", "a")
+    monkeypatch.setenv("CTX_LOADED_KEYS", "ip user")
+    # Vault now only has `user`; `ip` was removed.
+    _write_raw_vault("a", "export user='admin'\n")
+
+    assert main(["_shell", "load", "a"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert "unset ip" in lines
+    assert "unset user" in lines
+    assert any(line.startswith("export user=") for line in lines)
+    assert "export CTX_LOADED_KEYS=user" in lines
+
+
+def test_shell_load_unsets_old_vault_keys_on_switch(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Switching vaults unsets the previously loaded vault's keys."""
+    monkeypatch.setenv("CTX_ACTIVE_VAULT", "b")
+    monkeypatch.setenv("CTX_LOADED_VAULT", "a")
+    monkeypatch.setenv("CTX_LOADED_KEYS", "ip")
+    _write_raw_vault("b", "export host='example.com'\n")
+
+    assert main(["_shell", "load", "b"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert "unset ip" in lines
+    assert any(line.startswith("export host=") for line in lines)
+    assert "export CTX_LOADED_KEYS=host" in lines
+
+
+def test_shell_load_failed_emits_nothing_even_with_loaded_keys(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A malformed target must not unset/alter shell state (transactional)."""
+    monkeypatch.setenv("CTX_ACTIVE_VAULT", "broken")
+    monkeypatch.setenv("CTX_LOADED_VAULT", "good")
+    monkeypatch.setenv("CTX_LOADED_KEYS", "ip")
+    _write_raw_vault("broken", "bad-key=value\n")
+
+    assert main(["_shell", "load", "broken"]) == 1
+    captured = capsys.readouterr()
+    # Nothing emitted: the shell will not unset the previous vault's variables.
+    assert captured.out.strip() == ""
+    assert "error:" in captured.err.lower()
+
+
+def test_shell_load_fallback_to_prev_vault_keys_without_loaded_keys(
+    config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Without CTX_LOADED_KEYS, prior keys are derived from the prev vault."""
+    monkeypatch.setenv("CTX_ACTIVE_VAULT", "new")
+    monkeypatch.setenv("CTX_LOADED_VAULT", "old")
+    monkeypatch.delenv("CTX_LOADED_KEYS", raising=False)
+    _write_raw_vault("old", "export ip='1.1.1.1'\nexport user='admin'\n")
+    _write_raw_vault("new", "export token='t'\n")
+
+    assert main(["_shell", "load", "new"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert "unset ip" in lines
+    assert "unset user" in lines
+    assert any(line.startswith("export token=") for line in lines)

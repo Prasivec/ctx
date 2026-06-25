@@ -2,6 +2,11 @@
 # Installed to ~/.local/share/ctx/completions/ctx.bash
 # Usually loaded automatically when sourcing shell/ctx.sh
 
+# shellcheck shell=bash
+
+# bash-completion's _init_completion populates cur/prev/words/cword, and the
+# COMPREPLY=( $(compgen ...) ) idiom relies on intentional word-splitting.
+# shellcheck disable=SC2207,SC2034
 _ctx_complete() {
     local cur prev words cword
     _init_completion || return 0

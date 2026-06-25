@@ -72,6 +72,55 @@ def test_create_vault(config_dir: Path) -> None:
         create_vault("newone")
 
 
+def test_create_vault_second_fails(config_dir: Path) -> None:
+    """A second create of the same name raises VaultExistsError."""
+    create_vault("dup")
+    with pytest.raises(VaultExistsError):
+        create_vault("dup")
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Unix file permissions not enforced on Windows"
+)
+def test_create_vault_permissions(config_dir: Path) -> None:
+    """A created vault is mode 0600 and lives in a 0700 directory."""
+    path = create_vault("perm")
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    assert stat.S_IMODE(os.stat(path.parent).st_mode) == 0o700
+
+
+def test_concurrent_create_only_one_succeeds(config_dir: Path) -> None:
+    """Concurrent creates of the same vault allow exactly one success."""
+    import threading
+
+    results: list[str] = []
+    barrier = threading.Barrier(5)
+
+    def worker() -> None:
+        barrier.wait()
+        try:
+            create_vault("same")
+            results.append("ok")
+        except VaultExistsError:
+            results.append("exists")
+        except Exception as exc:  # pragma: no cover - surfaced via assertion
+            results.append(f"err:{exc!r}")
+
+    threads = [threading.Thread(target=worker) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert results.count("ok") == 1, results
+    assert results.count("exists") == 4, results
+    path = vault_file_path("same")
+    assert path.exists()
+    assert read_vault(path) == {}
+    if sys.platform != "win32":
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
 def test_set_requires_existing_vault(config_dir: Path) -> None:
     """set_variable does not create vaults implicitly."""
     with pytest.raises(VaultNotFoundError):

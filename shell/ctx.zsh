@@ -20,13 +20,23 @@ _ctx_unload_vault() {
     local _vault="$2"
     local _key
 
-    [[ -n "$_vault" ]] || return 0
+    # Prefer the tracked set of currently loaded keys so unloading works even
+    # if the vault file was removed (ctx delete) or edited. Fall back to the
+    # vault's on-disk keys for shells started before CTX_LOADED_KEYS existed.
+    if [[ -n "${CTX_LOADED_KEYS:-}" ]]; then
+        # ${=...} forces word-splitting in zsh; keys are validated identifiers.
+        for _key in ${=CTX_LOADED_KEYS}; do
+            [[ -n "$_key" ]] || continue
+            unset "$_key"
+        done
+    elif [[ -n "$_vault" ]]; then
+        while IFS= read -r _key; do
+            [[ -n "$_key" ]] || continue
+            unset "$_key"
+        done < <("$_bin" _shell keys-for "$_vault" 2>/dev/null)
+    fi
 
-    while IFS= read -r _key; do
-        [[ -n "$_key" ]] || continue
-        unset "$_key"
-    done < <("$_bin" _shell keys-for "$_vault" 2>/dev/null)
-
+    unset CTX_LOADED_KEYS
     if [[ "${CTX_LOADED_VAULT:-}" == "$_vault" ]]; then
         unset CTX_LOADED_VAULT
     fi
@@ -110,6 +120,22 @@ ctx() {
             fi
             _ctx_apply_vault "$_ctxctl_bin" "$CTX_ACTIVE_VAULT"
             return $?
+            ;;
+        unset)
+            "$_ctxctl_bin" unset "$@" || return $?
+            if [[ -n "${CTX_ACTIVE_VAULT:-}" ]]; then
+                _ctx_apply_vault "$_ctxctl_bin" "$CTX_ACTIVE_VAULT"
+                return $?
+            fi
+            return 0
+            ;;
+        clear)
+            "$_ctxctl_bin" clear "$@" || return $?
+            if [[ -n "${CTX_ACTIVE_VAULT:-}" ]]; then
+                _ctx_apply_vault "$_ctxctl_bin" "$CTX_ACTIVE_VAULT"
+                return $?
+            fi
+            return 0
             ;;
         current)
             if [[ -n "${CTX_ACTIVE_VAULT:-}" ]]; then

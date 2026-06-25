@@ -406,12 +406,28 @@ def create_vault(vault_name: str) -> Path:
         VaultExistsError: If the vault already exists.
     """
     validate_vault_name(vault_name)
+    ensure_directories()
     path = vault_file_path(vault_name)
-    if path.exists():
-        raise VaultExistsError(
-            f"Vault '{vault_name}' already exists. Use 'ctx load {vault_name}' to load it."
-        )
-    return ensure_vault(vault_name)
+    with acquire_vault_lock():
+        # Atomic, race-safe creation: O_EXCL guarantees that exactly one
+        # caller can create the file even across concurrent processes; the
+        # lock additionally serializes the existence check and creation.
+        try:
+            fd = os.open(
+                str(path),
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600,
+            )
+        except FileExistsError:
+            raise VaultExistsError(
+                f"Vault '{vault_name}' already exists. "
+                f"Use 'ctx load {vault_name}' to load it."
+            )
+        os.close(fd)
+        # Enforce 0600 regardless of the process umask.
+        os.chmod(path, 0o600)
+        _fsync_dir(path.parent)
+    return path
 
 
 def require_vault_path(vault_name: str) -> Path:

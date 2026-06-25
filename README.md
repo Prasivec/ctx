@@ -106,9 +106,10 @@ Each session exports its own `CTX_ACTIVE_VAULT`. They do not interfere.
 | Command       | What it does |
 |---------------|--------------|
 | `ctx load <vault>` | Load an **existing** vault into this terminal. Unloads variables from the previously loaded vault, then applies the new one. Fails if the vault does not exist — use `ctx create` first. |
-| `ctx load`    | Reload the **active** vault's variables from disk (no vault switch). Useful after `ctx edit`, `ctx unset`, or `ctx clear`. |
+| `ctx load`    | Reload the **active** vault's variables from disk (no vault switch). Useful after `ctx edit` or editing the vault file directly. |
 | `ctx unload`  | Remove all variables from the loaded vault from this shell session. Clears active/loaded state. Does not delete the vault file. |
 | `ctx set`     | Writes a variable to the active vault, then **auto-reloads** the vault. Updated values are immediately available as `$key`. |
+| `ctx unset` / `ctx clear` | Remove a variable / all variables from the active vault, then **auto-reload** so the change is reflected in the shell immediately. |
 
 Typical flow: `ctx create` once, `ctx load <vault>`, `ctx set` as needed, `ctx unload` when done with a target.
 
@@ -231,9 +232,9 @@ Run `ctx load <vault>` before `set`, `get`, etc.
 
 `ctx unload` removes `$ip`, `$user`, and other loaded vault variables from the shell without deleting the vault file.
 
-**Variables not updating after `ctx edit`, `ctx unset`, or `ctx clear`**
+**Variables not updating after `ctx edit` or a manual file edit**
 
-Run `ctx load` (no vault name) to refresh shell variables, or use `ctx set` (which auto-reloads). Calling `ctxctl` directly bypasses shell auto-load — use the `ctx` shell function instead.
+`ctx set`, `ctx unset`, and `ctx clear` auto-reload the shell, so changes appear immediately. After `ctx edit` (or editing the vault file directly), run `ctx load` (no vault name) to refresh shell variables. Calling `ctxctl` directly bypasses shell auto-load — use the `ctx` shell function instead.
 
 **Stale variables after switching vaults**
 
@@ -255,7 +256,7 @@ python -m pytest
 python -m compileall src
 ruff check .
 ruff format --check .
-mypy
+mypy src
 python -m build
 
 # Shell checks (Linux; install zsh and shellcheck first)

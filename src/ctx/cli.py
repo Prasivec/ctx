@@ -50,7 +50,8 @@ Shell integration:
   ctx load <vault> loads a vault and unloads the previous vault when switching.
   ctx load (no vault) reloads the active vault's variables from disk.
   ctx unload removes loaded vault variables from this shell session.
-  ctx set automatically reloads the vault after each successful write.
+  ctx set, ctx unset, and ctx clear automatically reload the vault after a
+  successful change so the shell environment stays in sync.
   Source shell/ctx.sh or shell/ctx.zsh and use the 'ctx' command in your shell.
 
 Examples:
@@ -238,35 +239,69 @@ def cmd_shell_keys_for(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_shell_load(args: argparse.Namespace) -> int:
-    """Internal: emit sanitized shell code to (un)load a vault safely.
+def _previously_loaded_keys() -> set[str]:
+    """Determine which variable keys are currently loaded from a ctx vault.
 
-    This command prints shell code intended to be eval'd by bash/zsh shell
-    integration. It never sources the user-editable vault file directly.
+    The set is tracked across loads in CTX_LOADED_KEYS so that the next load
+    can unset them, even on a same-vault reload after a key was removed (via
+    ``ctx unset``/``ctx clear`` or a manual edit). Falls back to the keys of
+    the previously loaded vault file for shells started before CTX_LOADED_KEYS
+    existed.
+
+    Returns:
+        Set of validated key names previously exported by ctx.
     """
-    validate_vault_name(args.vault)
-    path = require_vault_path(args.vault)
+    prev_keys: set[str] = set()
+    for token in os.environ.get("CTX_LOADED_KEYS", "").split():
+        try:
+            validate_key_name(token)
+        except Exception:
+            continue
+        prev_keys.add(token)
+
+    if prev_keys:
+        return prev_keys
 
     prev_loaded = os.environ.get("CTX_LOADED_VAULT", "").strip()
     if prev_loaded:
         try:
             validate_vault_name(prev_loaded)
         except Exception:
-            prev_loaded = ""
+            return prev_keys
+        if vault_exists(prev_loaded):
+            prev_keys = set(read_vault(vault_file_path(prev_loaded)))
+    return prev_keys
 
-    if prev_loaded and prev_loaded != args.vault and vault_exists(prev_loaded):
-        prev_vars = read_vault(vault_file_path(prev_loaded))
-        for key in sorted(prev_vars):
-            # Keys from read_vault are already validated, but keep this safe.
-            validate_key_name(key)
-            print(f"unset {key}")
 
+def cmd_shell_load(args: argparse.Namespace) -> int:
+    """Internal: emit sanitized shell code to (un)load a vault safely.
+
+    This command prints shell code intended to be eval'd by bash/zsh shell
+    integration. It never sources the user-editable vault file directly.
+
+    The full script is built in memory and only printed once the target vault
+    has been fully validated, so a malformed/unsafe vault changes nothing in
+    the shell. Variables previously loaded by ctx are unset first (tracked via
+    CTX_LOADED_KEYS) so stale variables disappear on unset/clear/same-vault
+    reload, while switching vaults still clears the old set.
+    """
+    validate_vault_name(args.vault)
+    path = require_vault_path(args.vault)
+
+    prev_keys = _previously_loaded_keys()
+
+    # Validate/parse the target BEFORE emitting anything so failures are inert.
     variables = read_vault_strict(path)
-    for key in sorted(variables):
+    for key in variables:
         validate_key_name(key)
-        print(f"export {key}={shlex.quote(variables[key])}")
 
-    print(f"export CTX_LOADED_VAULT={shlex.quote(args.vault)}")
+    lines: list[str] = [f"unset {key}" for key in sorted(prev_keys)]
+    lines += [
+        f"export {key}={shlex.quote(variables[key])}" for key in sorted(variables)
+    ]
+    lines.append(f"export CTX_LOADED_VAULT={shlex.quote(args.vault)}")
+    lines.append(f"export CTX_LOADED_KEYS={shlex.quote(' '.join(sorted(variables)))}")
+    print("\n".join(lines))
     return 0
 
 

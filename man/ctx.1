@@ -117,6 +117,11 @@ Terminal-local active vault name, set by \fBctx load\fR.
 .B CTX_LOADED_VAULT
 Name of the vault currently loaded in this shell session.
 .TP
+.B CTX_LOADED_KEYS
+Space-separated list of variable names currently exported from the loaded
+vault. Maintained by shell integration so that the correct variables are
+unset on reload, switch, \fBctx unset\fR, \fBctx clear\fR, and \fBctx unload\fR.
+.TP
 .B EDITOR
 Editor used by \fBctx edit\fR.
 .SH EXAMPLES
